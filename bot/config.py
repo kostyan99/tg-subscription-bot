@@ -7,6 +7,10 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHANNEL_ID = int(os.environ["CHANNEL_ID"])
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///./bot.db")
+# Railway (и большинство хостингов) дают DATABASE_URL вида postgresql://...,
+# а asyncpg-драйверу нужен префикс postgresql+asyncpg:// — конвертируем автоматически
+if DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
 # Цена и длительность подписки — легко поменять без трогания кода
 SUBSCRIPTION_PRICE_STARS = int(os.environ.get("SUBSCRIPTION_PRICE_STARS", "100"))
