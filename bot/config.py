@@ -25,3 +25,8 @@ CRYPTO_BOT_TOKEN = os.environ["CRYPTO_BOT_TOKEN"]
 # https://pay.crypt.bot/api/ и токен от @CryptoBot (не Testnet)
 CRYPTO_BOT_API_URL = os.environ.get("CRYPTO_BOT_API_URL", "https://testnet-pay.crypt.bot/api/")
 SUBSCRIPTION_PRICE_USDT = os.environ.get("SUBSCRIPTION_PRICE_USDT", "5")
+
+# Реферальная программа
+REFERRAL_PERCENT = int(os.environ.get("REFERRAL_PERCENT", "30"))
+# Telegram ID (не username!) того, кто может смотреть отчёт по выплатам рефереров
+ADMIN_TELEGRAM_ID = int(os.environ.get("ADMIN_TELEGRAM_ID", "0"))
