@@ -4,8 +4,8 @@ from aiogram import Bot
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.config import CHANNEL_ID, SUBSCRIPTION_DAYS
-from bot.models import Subscription, SubscriptionStatus, User
+from bot.config import CHANNEL_ID, SUBSCRIPTION_DAYS, REFERRAL_PERCENT
+from bot.models import Subscription, SubscriptionStatus, User, Order, ReferralEarning
 
 
 async def activate_subscription(session: AsyncSession, bot: Bot, user: User) -> str:
@@ -44,3 +44,24 @@ async def activate_subscription(session: AsyncSession, bot: Bot, user: User) -> 
         expire_date=int((now + datetime.timedelta(days=1)).timestamp()),
     )
     return invite_link.invite_link
+
+
+async def record_referral_earning(session: AsyncSession, order: Order, user: User) -> None:
+    """Если юзера кто-то пригласил — начисляет пригласившему REFERRAL_PERCENT
+    от суммы заказа. Вызывать сразу после того, как order помечен paid."""
+    if user.referred_by_id is None:
+        return
+
+    referrer = await session.get(User, user.referred_by_id)
+    if referrer is None:
+        return
+
+    earning = ReferralEarning(
+        referrer_id=referrer.id,
+        referred_user_id=user.id,
+        order_id=order.id,
+        method=order.method,
+        amount=round(order.amount * REFERRAL_PERCENT / 100),
+    )
+    session.add(earning)
+    await session.commit()
