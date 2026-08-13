@@ -9,7 +9,7 @@ from sqlalchemy import select
 from bot.config import CHANNEL_ID, REMINDER_DAYS_BEFORE
 from bot.database import async_session
 from bot.models import Subscription, SubscriptionStatus, User, Order, OrderStatus
-from bot.services import activate_subscription
+from bot.services import activate_subscription, record_referral_earning
 from bot.payments import cryptobot
 
 log = logging.getLogger(__name__)
@@ -103,6 +103,7 @@ async def check_crypto_payments(bot: Bot):
 
             order.status = OrderStatus.paid
             user = await session.get(User, order.user_id)
+            await record_referral_earning(session, order, user)
             invite_link = await activate_subscription(session, bot, user)
 
             try:
