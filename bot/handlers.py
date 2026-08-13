@@ -1,8 +1,9 @@
 import datetime
 import logging
+import secrets
 
 from aiogram import Router, F, Bot
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.types import (
     Message,
     CallbackQuery,
@@ -11,32 +12,57 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
-from sqlalchemy import select
+from sqlalchemy import select, func
 
-from bot.config import SUBSCRIPTION_PRICE_STARS, SUBSCRIPTION_DAYS, SUBSCRIPTION_PRICE_USDT
+from bot.config import (
+    SUBSCRIPTION_PRICE_STARS,
+    SUBSCRIPTION_DAYS,
+    SUBSCRIPTION_PRICE_USDT,
+    ADMIN_TELEGRAM_ID,
+)
 from bot.database import async_session
-from bot.models import User, Order, OrderStatus
-from bot.services import activate_subscription
+from bot.models import User, Order, OrderStatus, ReferralEarning
+from bot.services import activate_subscription, record_referral_earning
 from bot.payments import cryptobot
 
 router = Router()
 log = logging.getLogger(__name__)
 
 
-async def get_or_create_user(session, tg_user) -> User:
+async def get_or_create_user(session, tg_user, referral_code: str | None = None) -> User:
     result = await session.execute(
         select(User).where(User.telegram_id == tg_user.id)
     )
     user = result.scalar_one_or_none()
-    if user is None:
-        user = User(telegram_id=tg_user.id, username=tg_user.username)
-        session.add(user)
-        await session.flush()  # чтобы получить user.id до коммита
+    if user is not None:
+        return user
+
+    referred_by_id = None
+    if referral_code:
+        result = await session.execute(
+            select(User).where(User.referral_code == referral_code)
+        )
+        referrer = result.scalar_one_or_none()
+        if referrer is not None:
+            referred_by_id = referrer.id
+
+    user = User(
+        telegram_id=tg_user.id,
+        username=tg_user.username,
+        referral_code=secrets.token_hex(4),  # 8 символов, годится для deep-link
+        referred_by_id=referred_by_id,
+    )
+    session.add(user)
+    await session.flush()  # чтобы получить user.id до коммита
     return user
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message):
+async def cmd_start(message: Message, command: CommandObject):
+    async with async_session() as session:
+        await get_or_create_user(session, message.from_user, referral_code=command.args)
+        await session.commit()
+
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -47,8 +73,14 @@ async def cmd_start(message: Message):
             ],
             [
                 InlineKeyboardButton(
-                    text=f"₿ Оплатить {SUBSCRIPTION_PRICE_USDT} USDT",
+                    text=f"₿ Оплатить {SUBSCRIPTION_PRICE_USDT} USDT (крипта)",
                     callback_data="subscribe_crypto",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔗 Моя реферальная ссылка",
+                    callback_data="show_referral",
                 )
             ],
         ]
@@ -58,6 +90,115 @@ async def cmd_start(message: Message):
         f"Стоимость: {SUBSCRIPTION_PRICE_STARS} Stars за {SUBSCRIPTION_DAYS} дней.",
         reply_markup=kb,
     )
+
+
+@router.callback_query(F.data == "show_referral")
+async def show_referral(callback: CallbackQuery, bot: Bot):
+    async with async_session() as session:
+        user = await get_or_create_user(session, callback.from_user)
+        await session.commit()
+
+        bot_info = await bot.get_me()
+        link = f"https://t.me/{bot_info.username}?start={user.referral_code}"
+
+        result = await session.execute(
+            select(func.count(User.id)).where(User.referred_by_id == user.id)
+        )
+        referred_count = result.scalar_one()
+
+        result = await session.execute(
+            select(ReferralEarning.method, func.sum(ReferralEarning.amount))
+            .where(ReferralEarning.referrer_id == user.id)
+            .group_by(ReferralEarning.method)
+        )
+        earnings_by_method = result.all()
+
+    lines = [f"🔗 Твоя реферальная ссылка:\n{link}", "", f"Приглашено: {referred_count}"]
+    if earnings_by_method:
+        lines.append("\nЗаработано:")
+        for method, total in earnings_by_method:
+            if method == "stars":
+                lines.append(f"⭐ {total} Stars")
+            elif method == "crypto":
+                lines.append(f"₿ {total / 100:.2f} USDT")
+            else:
+                lines.append(f"{method}: {total}")
+    else:
+        lines.append("\nПока никто не оплатил по твоей ссылке.")
+
+    await callback.message.answer("\n".join(lines))
+    await callback.answer()
+
+
+@router.message(Command("referral_report"))
+async def referral_report(message: Message):
+    if message.from_user.id != ADMIN_TELEGRAM_ID:
+        return  # молча игнорируем — не раскрываем, что команда вообще существует
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(
+                User.id,
+                User.telegram_id,
+                User.username,
+                ReferralEarning.method,
+                func.sum(ReferralEarning.amount),
+            )
+            .join(ReferralEarning, ReferralEarning.referrer_id == User.id)
+            .where(ReferralEarning.paid_out.is_(False))
+            .group_by(User.id, ReferralEarning.method)
+        )
+        rows = result.all()
+
+    if not rows:
+        await message.answer("Невыплаченных начислений нет.")
+        return
+
+    lines = ["💰 К выплате рефererам:\n"]
+    for user_id, telegram_id, username, method, total in rows:
+        name = f"@{username}" if username else str(telegram_id)
+        amount_str = f"{total} Stars" if method == "stars" else f"{total / 100:.2f} USDT"
+        lines.append(f"{name} (id={telegram_id}): {amount_str}")
+
+    lines.append(
+        "\nПосле того как выплатишь вручную — отметь так:\n"
+        "/mark_paid <telegram_id>"
+    )
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("mark_paid"))
+async def mark_paid(message: Message, command: CommandObject):
+    if message.from_user.id != ADMIN_TELEGRAM_ID:
+        return
+
+    if not command.args or not command.args.strip().isdigit():
+        await message.answer("Использование: /mark_paid <telegram_id>")
+        return
+
+    target_telegram_id = int(command.args.strip())
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(User).where(User.telegram_id == target_telegram_id)
+        )
+        user = result.scalar_one_or_none()
+        if user is None:
+            await message.answer("Такого пользователя нет в базе.")
+            return
+
+        result = await session.execute(
+            select(ReferralEarning).where(
+                ReferralEarning.referrer_id == user.id,
+                ReferralEarning.paid_out.is_(False),
+            )
+        )
+        earnings = result.scalars().all()
+        for earning in earnings:
+            earning.paid_out = True
+        await session.commit()
+
+    await message.answer(f"Отмечено как выплачено: {len(earnings)} начислений.")
 
 
 @router.callback_query(F.data == "subscribe_stars")
@@ -107,6 +248,7 @@ async def successful_payment(message: Message, bot: Bot):
         session.add(order)
         await session.commit()
 
+        await record_referral_earning(session, order, user)
         invite_link = await activate_subscription(session, bot, user)
 
     await message.answer(
