@@ -32,6 +32,12 @@ class User(Base):
         DateTime, default=datetime.datetime.utcnow
     )
 
+    # Реферальная программа
+    referral_code: Mapped[str] = mapped_column(String(16), unique=True, index=True)
+    referred_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+
     orders: Mapped[list["Order"]] = relationship(back_populates="user")
     subscriptions: Mapped[list["Subscription"]] = relationship(back_populates="user")
 
@@ -72,3 +78,21 @@ class Subscription(Base):
     reminded: Mapped[bool] = mapped_column(Boolean, default=False)
 
     user: Mapped["User"] = relationship(back_populates="subscriptions")
+
+
+class ReferralEarning(Base):
+    __tablename__ = "referral_earnings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    referrer_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    referred_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"))
+    # метод оплаты копируем из заказа — суммы в разных валютах нельзя просто
+    # складывать вместе (Stars и центы USDT это разные единицы), поэтому
+    # отчёты всегда считаем сгруппированными по method
+    method: Mapped[str] = mapped_column(String(32))
+    amount: Mapped[int] = mapped_column()  # 30% от order.amount, в тех же единицах
+    paid_out: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, default=datetime.datetime.utcnow
+    )
