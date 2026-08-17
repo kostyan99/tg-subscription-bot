@@ -4,14 +4,7 @@ import secrets
 
 from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart, Command, CommandObject
-from aiogram.types import (
-    Message,
-    CallbackQuery,
-    LabeledPrice,
-    PreCheckoutQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
+from aiogram.types import Message, CallbackQuery, LabeledPrice, PreCheckoutQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy import select, func
 
 from bot.config import (
@@ -21,12 +14,15 @@ from bot.config import (
     ADMIN_TELEGRAM_ID,
 )
 from bot.database import async_session
-from bot.models import User, Order, OrderStatus, ReferralEarning
+from bot.models import User, Order, OrderStatus, ReferralEarning, Subscription, SubscriptionStatus
 from bot.services import activate_subscription, record_referral_earning
 from bot.payments import cryptobot
+from bot import keyboards
 
 router = Router()
 log = logging.getLogger(__name__)
+
+REFERRALS_PAGE_SIZE = 5
 
 
 async def get_or_create_user(session, tg_user, referral_code: str | None = None) -> User:
@@ -57,43 +53,61 @@ async def get_or_create_user(session, tg_user, referral_code: str | None = None)
     return user
 
 
+# ---------- Главное меню ----------
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, command: CommandObject):
     async with async_session() as session:
         await get_or_create_user(session, message.from_user, referral_code=command.args)
         await session.commit()
 
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=f"⭐ Оплатить {SUBSCRIPTION_PRICE_STARS} Stars",
-                    callback_data="subscribe_stars",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=f"₿ Оплатить {SUBSCRIPTION_PRICE_USDT} USDT (крипта)",
-                    callback_data="subscribe_crypto",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🔗 Моя реферальная ссылка",
-                    callback_data="show_referral",
-                )
-            ],
-        ]
-    )
     await message.answer(
-        "Привет! Здесь можно оформить подписку на закрытый канал.\n\n"
-        f"Стоимость: {SUBSCRIPTION_PRICE_STARS} Stars за {SUBSCRIPTION_DAYS} дней.",
-        reply_markup=kb,
+        "Привет! Выбери раздел:",
+        reply_markup=keyboards.main_menu_kb(),
     )
 
 
-@router.callback_query(F.data == "show_referral")
-async def show_referral(callback: CallbackQuery, bot: Bot):
+@router.callback_query(F.data == "menu_main")
+async def menu_main(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "Привет! Выбери раздел:",
+        reply_markup=keyboards.main_menu_kb(),
+    )
+    await callback.answer()
+
+
+# ---------- Раздел "Подписка" ----------
+
+@router.callback_query(F.data == "menu_subscription")
+async def menu_subscription(callback: CallbackQuery):
+    async with async_session() as session:
+        user = await get_or_create_user(session, callback.from_user)
+        await session.commit()
+
+        result = await session.execute(
+            select(Subscription).where(Subscription.user_id == user.id)
+        )
+        sub = result.scalar_one_or_none()
+
+    now = datetime.datetime.utcnow()
+    if sub and sub.status == SubscriptionStatus.active and sub.end_date > now:
+        status_line = f"✅ Подписка активна до {sub.end_date.strftime('%d.%m.%Y')}"
+    else:
+        status_line = "❌ Нет активной подписки"
+
+    await callback.message.edit_text(
+        f"{status_line}\n\n"
+        f"Стоимость: {SUBSCRIPTION_PRICE_STARS} Stars или {SUBSCRIPTION_PRICE_USDT} USDT "
+        f"за {SUBSCRIPTION_DAYS} дней.",
+        reply_markup=keyboards.subscription_menu_kb(),
+    )
+    await callback.answer()
+
+
+# ---------- Раздел "Реферальная программа" ----------
+
+@router.callback_query(F.data == "menu_referral")
+async def menu_referral(callback: CallbackQuery, bot: Bot):
     async with async_session() as session:
         user = await get_or_create_user(session, callback.from_user)
         await session.commit()
@@ -115,7 +129,7 @@ async def show_referral(callback: CallbackQuery, bot: Bot):
 
     lines = [f"🔗 Твоя реферальная ссылка:\n{link}", "", f"Приглашено: {referred_count}"]
     if earnings_by_method:
-        lines.append("\nЗаработано:")
+        lines.append("\nЗаработано всего:")
         for method, total in earnings_by_method:
             if method == "stars":
                 lines.append(f"⭐ {total} Stars")
@@ -126,9 +140,62 @@ async def show_referral(callback: CallbackQuery, bot: Bot):
     else:
         lines.append("\nПока никто не оплатил по твоей ссылке.")
 
-    await callback.message.answer("\n".join(lines))
+    await callback.message.edit_text("\n".join(lines), reply_markup=keyboards.referral_menu_kb())
     await callback.answer()
 
+
+@router.callback_query(F.data.startswith("referral_list_"))
+async def referral_list(callback: CallbackQuery):
+    page = int(callback.data.removeprefix("referral_list_"))
+
+    async with async_session() as session:
+        user = await get_or_create_user(session, callback.from_user)
+        await session.commit()
+
+        result = await session.execute(
+            select(User)
+            .where(User.referred_by_id == user.id)
+            .order_by(User.created_at.desc())
+            .offset(page * REFERRALS_PAGE_SIZE)
+            .limit(REFERRALS_PAGE_SIZE + 1)  # +1 чтобы понять, есть ли следующая страница
+        )
+        referred_users = result.scalars().all()
+        has_next = len(referred_users) > REFERRALS_PAGE_SIZE
+        referred_users = referred_users[:REFERRALS_PAGE_SIZE]
+
+        lines = [f"👥 Твои рефералы (стр. {page + 1}):\n"]
+        if not referred_users:
+            lines.append("Пока никого нет." if page == 0 else "Больше никого нет.")
+
+        for ref_user in referred_users:
+            name = f"@{ref_user.username}" if ref_user.username else f"id{ref_user.telegram_id}"
+            joined = ref_user.created_at.strftime("%d.%m.%Y")
+
+            result2 = await session.execute(
+                select(ReferralEarning.method, func.sum(ReferralEarning.amount))
+                .where(
+                    ReferralEarning.referrer_id == user.id,
+                    ReferralEarning.referred_user_id == ref_user.id,
+                )
+                .group_by(ReferralEarning.method)
+            )
+            earnings = result2.all()
+            if earnings:
+                earn_str = ", ".join(
+                    f"{total} Stars" if method == "stars" else f"{total / 100:.2f} USDT"
+                    for method, total in earnings
+                )
+                lines.append(f"• {name} — с {joined}, оплатил ({earn_str})")
+            else:
+                lines.append(f"• {name} — с {joined}, ещё не оплатил")
+
+    await callback.message.edit_text(
+        "\n".join(lines), reply_markup=keyboards.referral_list_kb(page, has_next)
+    )
+    await callback.answer()
+
+
+# ---------- Админ-команды ----------
 
 @router.message(Command("referral_report"))
 async def referral_report(message: Message):
@@ -201,6 +268,8 @@ async def mark_paid(message: Message, command: CommandObject):
     await message.answer(f"Отмечено как выплачено: {len(earnings)} начислений.")
 
 
+# ---------- Оплата Stars ----------
+
 @router.callback_query(F.data == "subscribe_stars")
 async def subscribe_stars(callback: CallbackQuery, bot: Bot):
     await bot.send_invoice(
@@ -256,6 +325,8 @@ async def successful_payment(message: Message, bot: Bot):
         f"Вот твоя ссылка на канал (одноразовая, действует 24 часа):\n{invite_link}"
     )
 
+
+# ---------- Оплата криптой ----------
 
 @router.callback_query(F.data == "subscribe_crypto")
 async def subscribe_crypto(callback: CallbackQuery, bot: Bot):
