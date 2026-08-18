@@ -9,10 +9,14 @@ from sqlalchemy import select
 from bot.config import CHANNEL_ID, REMINDER_DAYS_BEFORE
 from bot.database import async_session
 from bot.models import Subscription, SubscriptionStatus, User, Order, OrderStatus
-from bot.services import activate_subscription, record_referral_earning
+from bot.services import activate_subscription, record_referral_earning, InviteLinkError
 from bot.payments import cryptobot
 
 log = logging.getLogger(__name__)
+
+# Сколько держим неоплаченный крипто-заказ, прежде чем считать его протухшим
+# и перестать проверять (иначе pending-заказы копятся в БД вечно)
+CRYPTO_ORDER_TIMEOUT = datetime.timedelta(hours=1)
 
 
 async def check_reminders(bot: Bot):
@@ -83,7 +87,7 @@ async def check_expired(bot: Bot):
 
 
 async def check_crypto_payments(bot: Bot):
-    """Опрашивает CryptoBot по всем незавершённым крипто-заказам.
+    """Опрашивает CryptoBot ОДНИМ батч-запросом по всем незавершённым крипто-заказам.
     Временное решение для локальной разработки без публичного домена —
     на проде это заменит webhook от CryptoBot."""
     async with async_session() as session:
@@ -91,36 +95,67 @@ async def check_crypto_payments(bot: Bot):
             select(Order).where(Order.method == "crypto", Order.status == OrderStatus.pending)
         )
         orders = result.scalars().all()
+        if not orders:
+            return
 
+        id_to_order: dict[int, Order] = {}
         for order in orders:
-            if not order.telegram_charge_id or not order.telegram_charge_id.startswith("cryptobot_"):
-                continue
-            invoice_id = int(order.telegram_charge_id.removeprefix("cryptobot_"))
+            if order.telegram_charge_id and order.telegram_charge_id.startswith("cryptobot_"):
+                invoice_id = int(order.telegram_charge_id.removeprefix("cryptobot_"))
+                id_to_order[invoice_id] = order
 
-            status = await cryptobot.get_invoice_status(invoice_id)
-            if status != "paid":
-                continue  # ещё не оплачен или просрочен — просто ждём
+        statuses = await cryptobot.get_invoices_statuses(list(id_to_order.keys()))
+        now = datetime.datetime.utcnow()
 
-            order.status = OrderStatus.paid
-            user = await session.get(User, order.user_id)
-            await record_referral_earning(session, order, user)
-            invite_link = await activate_subscription(session, bot, user)
+        for invoice_id, order in id_to_order.items():
+            status = statuses.get(invoice_id)
 
-            try:
-                await bot.send_message(
-                    user.telegram_id,
-                    "Оплата получена ✅\n\n"
-                    f"Вот твоя ссылка на канал (одноразовая, действует 24 часа):\n{invite_link}",
-                )
-            except Exception as e:
-                log.warning(f"Не удалось отправить ссылку user_id={user.id}: {e}")
+            if status == "paid":
+                # Каждый заказ обрабатываем в своём try/except — падение на одном
+                # заказе не должно останавливать обработку остальных в этой же партии
+                try:
+                    order.status = OrderStatus.paid
+                    user = await session.get(User, order.user_id)
+                    await record_referral_earning(session, order, user)
+
+                    try:
+                        invite_link = await activate_subscription(session, bot, user)
+                    except InviteLinkError:
+                        # деньги и подписка в порядке, юзеру отдельно сообщим,
+                        # что со ссылкой проблема — админ уже уведомлён внутри activate_subscription
+                        await bot.send_message(
+                            user.telegram_id,
+                            "Оплата получена ✅, но возникла техническая проблема при "
+                            "выдаче ссылки на канал. Мы уже разбираемся, напишем отдельно.",
+                        )
+                        continue
+
+                    await bot.send_message(
+                        user.telegram_id,
+                        "Оплата получена ✅\n\n"
+                        f"Вот твоя ссылка на канал (одноразовая, действует 24 часа):\n{invite_link}",
+                    )
+                except Exception as e:
+                    log.error(f"Ошибка обработки crypto-заказа {order.id}: {e}")
+
+            elif status == "expired":
+                order.status = OrderStatus.failed
+
+            elif status is None and (now - order.created_at) > CRYPTO_ORDER_TIMEOUT:
+                # Инвойс не нашёлся в ответе И заказ уже старый — считаем протухшим,
+                # чтобы не проверять его бесконечно
+                order.status = OrderStatus.failed
 
         await session.commit()
 
 
 def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(check_reminders, "interval", hours=1, args=[bot])
-    scheduler.add_job(check_expired, "interval", hours=1, args=[bot])
-    scheduler.add_job(check_crypto_payments, "interval", seconds=30, args=[bot])
+    # max_instances=1 (явно, хоть это и дефолт APScheduler) — гарантирует,
+    # что новый запуск задачи не стартует, пока не закончился предыдущий.
+    # Без этого при подвисшем HTTP-запросе к CryptoBot могли бы наложиться
+    # два параллельных прогона check_crypto_payments и задвоить обработку заказа.
+    scheduler.add_job(check_reminders, "interval", hours=1, args=[bot], max_instances=1)
+    scheduler.add_job(check_expired, "interval", hours=1, args=[bot], max_instances=1)
+    scheduler.add_job(check_crypto_payments, "interval", seconds=30, args=[bot], max_instances=1)
     return scheduler
