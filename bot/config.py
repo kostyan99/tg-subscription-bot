@@ -25,8 +25,15 @@ CRYPTO_BOT_TOKEN = os.environ["CRYPTO_BOT_TOKEN"]
 # https://pay.crypt.bot/api/ и токен от @CryptoBot (не Testnet)
 CRYPTO_BOT_API_URL = os.environ.get("CRYPTO_BOT_API_URL", "https://testnet-pay.crypt.bot/api/")
 SUBSCRIPTION_PRICE_USDT = os.environ.get("SUBSCRIPTION_PRICE_USDT", "5")
+# round(), а не int() — int() просто отбрасывает дробную часть и может
+# занижать цену на копейку при "некруглых" ценах типа 4.99
+SUBSCRIPTION_PRICE_USDT_CENTS = round(float(SUBSCRIPTION_PRICE_USDT) * 100)
 
 # Реферальная программа
 REFERRAL_PERCENT = int(os.environ.get("REFERRAL_PERCENT", "30"))
 # Telegram ID (не username!) того, кто может смотреть отчёт по выплатам рефереров
 ADMIN_TELEGRAM_ID = int(os.environ.get("ADMIN_TELEGRAM_ID", "0"))
+
+# Автовывод начислений в USDT через CryptoBot (Stars так вывести нельзя —
+# у Bot API нет метода перевода произвольной суммы звёзд юзеру)
+MIN_WITHDRAWAL_USDT_CENTS = round(float(os.environ.get("MIN_WITHDRAWAL_USDT", "15")) * 100)
