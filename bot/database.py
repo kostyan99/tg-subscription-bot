@@ -3,7 +3,20 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from bot.config import DATABASE_URL
 from bot.models import Base
 
-engine = create_async_engine(DATABASE_URL, echo=False)
+if DATABASE_URL.startswith("sqlite"):
+    # SQLite (только локальная разработка) — свои правила пулинга, доп. параметры не нужны/не поддерживаются
+    engine = create_async_engine(DATABASE_URL, echo=False)
+else:
+    engine = create_async_engine(
+        DATABASE_URL,
+        echo=False,
+        pool_pre_ping=True,   # проверяет соединение перед использованием — спасает от "битых"
+                               # коннектов после простоя (managed Postgres любит их рвать)
+        pool_recycle=1800,    # пересоздаёт соединения раз в 30 минут на всякий случай
+        pool_size=20,         # держим 20 живых соединений
+        max_overflow=10,      # плюс до 10 временных сверх пула при пиковой нагрузке
+    )
+
 async_session = async_sessionmaker(engine, expire_on_commit=False)
 
 
