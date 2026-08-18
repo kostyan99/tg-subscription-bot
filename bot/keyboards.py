@@ -36,7 +36,17 @@ def referral_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="👥 Кого пригласил", callback_data="referral_list_0")],
+            [InlineKeyboardButton(text="💰 Вывести USDT", callback_data="withdraw_start")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_main")],
+        ]
+    )
+
+
+def withdraw_confirm_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Подтвердить вывод", callback_data="withdraw_execute")],
+            [InlineKeyboardButton(text="⬅️ Отмена", callback_data="menu_referral")],
         ]
     )
 
