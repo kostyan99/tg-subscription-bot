@@ -131,6 +131,13 @@ admin.add_view(ReferralEarningAdmin)
 admin.add_view(WithdrawalAdmin)
 
 
+@app.get("/health")
+async def health():
+    # Без авторизации — специально для healthcheck-пинга Railway.
+    # Никаких данных не отдаёт, просто подтверждает, что процесс жив.
+    return {"status": "ok"}
+
+
 # ---------- Дашборд со сводкой (отдельная простая HTTP Basic-авторизация) ----------
 
 security = HTTPBasic()
