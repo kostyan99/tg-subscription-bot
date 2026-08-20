@@ -143,6 +143,7 @@ a.plain { color: var(--accent-hover); }
 def render_page(active: str, title: str, body: str) -> str:
     nav_items = [
         ("/", "📊", "Дашборд", "dashboard"),
+        ("/admin/referral-overview", "👥", "Рефералы", "referral-overview"),
         ("/admin/invite-links", "🔗", "Пригласительные ссылки", "invite-links"),
         ("/admin", "🗂️", "Таблицы", "tables"),
     ]
