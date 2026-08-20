@@ -119,3 +119,17 @@ class Withdrawal(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=datetime.datetime.utcnow
     )
+
+
+class ManualInviteLink(Base):
+    """Ссылки, сгенерированные вручную из веб-админки (не привязаны к оплате) —
+    например, чтобы пригласить кого-то напрямую, без прохождения бота."""
+    __tablename__ = "manual_invite_links"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    invite_link: Mapped[str] = mapped_column(String(255))
+    note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    expire_date: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, default=datetime.datetime.utcnow
+    )
