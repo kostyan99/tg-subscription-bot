@@ -2,20 +2,31 @@ import datetime
 import os
 import secrets
 
+from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError
 from fastapi import FastAPI, Request, Depends, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from sqladmin import Admin, ModelView
+from sqladmin import Admin, ModelView, BaseView, expose
 from sqladmin.authentication import AuthenticationBackend
 from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy import select, func
 
+from bot.config import BOT_TOKEN, CHANNEL_ID
 from bot.database import engine, async_session
-from bot.models import User, Order, Subscription, ReferralEarning, Withdrawal, SubscriptionStatus, OrderStatus
+from bot.models import (
+    User, Order, Subscription, ReferralEarning, Withdrawal, ManualInviteLink,
+    SubscriptionStatus, OrderStatus,
+)
+from admin_panel.theme import render_page
 
 ADMIN_PANEL_USERNAME = os.environ["ADMIN_PANEL_USERNAME"]
 ADMIN_PANEL_PASSWORD = os.environ["ADMIN_PANEL_PASSWORD"]
 SECRET_KEY = os.environ["ADMIN_PANEL_SECRET_KEY"]  # любая длинная случайная строка
+
+# Отдельный Bot-клиент для действий из веб-панели (создание ссылок) —
+# не связан с процессом бота, просто ещё один HTTP-клиент к Bot API
+bot_client = Bot(token=BOT_TOKEN)
 
 
 def check_credentials(username: str, password: str) -> bool:
@@ -46,6 +57,11 @@ class AdminAuth(AuthenticationBackend):
 
 app = FastAPI(title="Admin Panel")
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    await bot_client.session.close()
 
 admin = Admin(
     app,
@@ -131,6 +147,80 @@ admin.add_view(ReferralEarningAdmin)
 admin.add_view(WithdrawalAdmin)
 
 
+# ---------- Генератор пригласительных ссылок (кастомная страница внутри /admin) ----------
+
+class InviteLinksView(BaseView):
+    name = "Пригласительные ссылки"
+    icon = "fa-solid fa-link"
+
+    @expose("/invite-links", methods=["GET", "POST"])
+    async def page(self, request: Request):
+        banner = ""
+
+        if request.method == "POST":
+            form = await request.form()
+            note = (form.get("note") or "").strip()[:255]
+            try:
+                link = await bot_client.create_chat_invite_link(
+                    chat_id=CHANNEL_ID,
+                    member_limit=1,
+                    name=(note[:32] if note else None),  # Telegram ограничивает name 32 символами
+                    expire_date=int(
+                        (datetime.datetime.utcnow() + datetime.timedelta(days=7)).timestamp()
+                    ),
+                )
+                async with async_session() as session:
+                    session.add(
+                        ManualInviteLink(
+                            invite_link=link.invite_link,
+                            note=note or None,
+                            expire_date=datetime.datetime.utcnow() + datetime.timedelta(days=7),
+                        )
+                    )
+                    await session.commit()
+                banner = '<div class="banner banner-ok">✅ Ссылка создана — она одноразовая (member_limit=1) и живёт 7 дней.</div>'
+            except TelegramAPIError as e:
+                banner = f'<div class="banner banner-err">❌ Не удалось создать ссылку: {e}. Проверь, что бот всё ещё админ канала с правом приглашать по ссылке.</div>'
+
+        async with async_session() as session:
+            result = await session.execute(
+                select(ManualInviteLink).order_by(ManualInviteLink.created_at.desc()).limit(30)
+            )
+            links = result.scalars().all()
+
+        rows = "".join(
+            f"""<tr>
+                <td><code>{l.invite_link}</code></td>
+                <td>{l.note or "—"}</td>
+                <td>{l.created_at.strftime("%d.%m.%Y %H:%M")}</td>
+                <td>{l.expire_date.strftime("%d.%m.%Y") if l.expire_date else "—"}</td>
+                <td><button class="btn-ghost" onclick="navigator.clipboard.writeText('{l.invite_link}')">Скопировать</button></td>
+            </tr>"""
+            for l in links
+        ) or '<tr><td colspan="5" style="color:var(--text-dim)">Пока ничего не создано.</td></tr>'
+
+        body = f"""
+        <h2>🔗 Пригласительные ссылки</h2>
+        {banner}
+        <div class="panel">
+            <form method="post">
+                <input type="text" name="note" placeholder="Заметка (необязательно) — например, кому эта ссылка">
+                <button type="submit">Сгенерировать одноразовую ссылку</button>
+            </form>
+        </div>
+        <div class="panel" style="padding:0; overflow:hidden;">
+            <table>
+                <thead><tr><th>Ссылка</th><th>Заметка</th><th>Создана</th><th>Истекает</th><th></th></tr></thead>
+                <tbody>{rows}</tbody>
+            </table>
+        </div>
+        """
+        return HTMLResponse(render_page("invite-links", "Пригласительные ссылки", body))
+
+
+admin.add_view(InviteLinksView)
+
+
 @app.get("/health")
 async def health():
     # Без авторизации — специально для healthcheck-пинга Railway.
@@ -181,36 +271,37 @@ async def dashboard(_: str = Depends(require_auth)):
             )
         ).all()
 
-    def fmt(rows, stars_label="Stars", usdt_label="USDT"):
+    def fmt(rows):
         if not rows:
-            return "нет данных"
+            return "—"
         parts = []
         for method, total in rows:
             if method == "stars":
-                parts.append(f"{total} {stars_label}")
+                parts.append(f"⭐ {total}")
             elif method == "crypto":
-                parts.append(f"{total / 100:.2f} {usdt_label}")
-        return ", ".join(parts) if parts else "нет данных"
+                parts.append(f"₿ {total / 100:.2f}")
+        return " · ".join(parts) if parts else "—"
 
-    html = f"""
-    <html>
-    <head>
-        <title>Сводка</title>
-        <style>
-            body {{ font-family: -apple-system, sans-serif; background: #0e0e12; color: #eee; padding: 32px; }}
-            .card {{ background: #1a1a20; border-radius: 12px; padding: 20px; margin-bottom: 16px; max-width: 480px; }}
-            .num {{ font-size: 28px; font-weight: 700; }}
-            a {{ color: #7aa2ff; }}
-        </style>
-    </head>
-    <body>
-        <h2>📊 Сводка</h2>
-        <div class="card"><div>Всего пользователей</div><div class="num">{total_users}</div></div>
-        <div class="card"><div>Активных подписок сейчас</div><div class="num">{active_subs}</div></div>
-        <div class="card"><div>Выручка всего (оплаченные заказы)</div><div class="num">{fmt(revenue_by_method)}</div></div>
-        <div class="card"><div>Невыплаченные реферальные начисления</div><div class="num">{fmt(pending_referral_payouts)}</div></div>
-        <p><a href="/admin">→ Открыть подробные таблицы (пользователи, подписки, заказы...)</a></p>
-    </body>
-    </html>
+    body = f"""
+    <h2>📊 Дашборд</h2>
+    <div class="grid">
+        <div class="card">
+            <div class="label">Всего пользователей</div>
+            <div class="value">{total_users}</div>
+        </div>
+        <div class="card">
+            <div class="label">Активных подписок сейчас</div>
+            <div class="value">{active_subs}</div>
+        </div>
+        <div class="card">
+            <div class="label">Выручка всего</div>
+            <div class="value">{fmt(revenue_by_method)}</div>
+        </div>
+        <div class="card">
+            <div class="label">Невыплаченные рефки</div>
+            <div class="value">{fmt(pending_referral_payouts)}</div>
+        </div>
+    </div>
+    <p style="color:var(--text-dim)">Подробные таблицы — в разделе <a class="plain" href="/admin">Таблицы</a>, генерация ссылок на канал — в разделе <a class="plain" href="/admin/invite-links">Пригласительные ссылки</a>.</p>
     """
-    return HTMLResponse(html)
+    return HTMLResponse(render_page("dashboard", "Дашборд", body))
