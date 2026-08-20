@@ -11,6 +11,7 @@ from sqladmin import Admin, ModelView, BaseView, expose
 from sqladmin.authentication import AuthenticationBackend
 from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy import select, func
+from sqlalchemy.orm import aliased
 
 from bot.config import BOT_TOKEN, CHANNEL_ID
 from bot.database import engine, async_session
@@ -148,6 +149,121 @@ admin.add_view(WithdrawalAdmin)
 
 
 # ---------- Генератор пригласительных ссылок (кастомная страница внутри /admin) ----------
+
+class ReferralOverviewView(BaseView):
+    name = "Рефералы"
+    icon = "fa-solid fa-people-group"
+
+    @expose("/referral-overview", methods=["GET"])
+    async def page(self, request: Request):
+        ReferrerUser = aliased(User)
+        ReferredUser = aliased(User)
+
+        async with async_session() as session:
+            # Сколько всего юзеров привёл каждый реферер (считаем по User.referred_by_id,
+            # а не по ReferralEarning — так учитываются и те, кто ещё не оплатил)
+            invited_counts = dict(
+                (row[0], row[1])
+                for row in (
+                    await session.execute(
+                        select(User.referred_by_id, func.count(User.id))
+                        .where(User.referred_by_id.is_not(None))
+                        .group_by(User.referred_by_id)
+                    )
+                ).all()
+            )
+
+            # Сумма начислений по каждому рефереру и методу оплаты
+            earnings_by_referrer: dict[int, dict[str, int]] = {}
+            for referrer_id, method, total in (
+                await session.execute(
+                    select(ReferralEarning.referrer_id, ReferralEarning.method, func.sum(ReferralEarning.amount))
+                    .group_by(ReferralEarning.referrer_id, ReferralEarning.method)
+                )
+            ).all():
+                earnings_by_referrer.setdefault(referrer_id, {})[method] = total
+
+            if invited_counts:
+                referrers = (
+                    await session.execute(select(User).where(User.id.in_(invited_counts.keys())))
+                ).scalars().all()
+            else:
+                referrers = []
+
+            # Детальная разбивка: кто конкретно кого привёл и сколько за это начислено
+            detail_rows = (
+                await session.execute(
+                    select(
+                        ReferrerUser.telegram_id, ReferrerUser.username,
+                        ReferredUser.telegram_id, ReferredUser.username,
+                        ReferralEarning.method, ReferralEarning.amount,
+                        ReferralEarning.paid_out, ReferralEarning.created_at,
+                    )
+                    .join(ReferrerUser, ReferralEarning.referrer_id == ReferrerUser.id)
+                    .join(ReferredUser, ReferralEarning.referred_user_id == ReferredUser.id)
+                    .order_by(ReferralEarning.created_at.desc())
+                    .limit(200)
+                )
+            ).all()
+
+        def fmt_amounts(amounts: dict[str, int]) -> str:
+            parts = []
+            if amounts.get("stars"):
+                parts.append(f"⭐ {amounts['stars']}")
+            if amounts.get("crypto"):
+                parts.append(f"₿ {amounts['crypto'] / 100:.2f}")
+            return " · ".join(parts) if parts else "—"
+
+        def label(telegram_id: int, username: str | None) -> str:
+            return f"@{username}" if username else f"id{telegram_id}"
+
+        summary_rows = "".join(
+            f"""<tr>
+                <td>{label(r.telegram_id, r.username)}</td>
+                <td>{invited_counts.get(r.id, 0)}</td>
+                <td>{fmt_amounts(earnings_by_referrer.get(r.id, {}))}</td>
+            </tr>"""
+            for r in sorted(referrers, key=lambda u: invited_counts.get(u.id, 0), reverse=True)
+        ) or '<tr><td colspan="3" style="color:var(--text-dim)">Рефералов пока нет.</td></tr>'
+
+        def fmt_one(method: str, amount: int) -> str:
+            return f"⭐ {amount}" if method == "stars" else f"₿ {amount / 100:.2f}"
+
+        detail_html = "".join(
+            f"""<tr>
+                <td>{label(rt, ru)}</td>
+                <td>{label(dt, du)}</td>
+                <td>{fmt_one(method, amount)}</td>
+                <td>{"✅ выплачено" if paid else "⏳ ожидает"}</td>
+                <td>{created.strftime("%d.%m.%Y %H:%M")}</td>
+            </tr>"""
+            for rt, ru, dt, du, method, amount, paid, created in detail_rows
+        ) or '<tr><td colspan="5" style="color:var(--text-dim)">Начислений пока нет.</td></tr>'
+
+        body = f"""
+        <h2>👥 Рефералы</h2>
+
+        <h3 style="font-size:16px; color:var(--text-dim); margin: 0 0 12px 0;">Сводка по каждому рефереру</h3>
+        <div class="panel" style="padding:0; overflow:hidden; margin-bottom:32px;">
+            <table>
+                <thead><tr><th>Реферер</th><th>Приглашено</th><th>Заработано всего</th></tr></thead>
+                <tbody>{summary_rows}</tbody>
+            </table>
+        </div>
+
+        <h3 style="font-size:16px; color:var(--text-dim); margin: 0 0 12px 0;">Кто кого привёл — по каждому начислению</h3>
+        <div class="panel" style="padding:0; overflow:hidden;">
+            <table>
+                <thead><tr><th>Реферер</th><th>Приглашённый</th><th>Сумма</th><th>Статус</th><th>Дата</th></tr></thead>
+                <tbody>{detail_html}</tbody>
+            </table>
+        </div>
+        """
+        return HTMLResponse(render_page("referral-overview", "Рефералы", body))
+
+
+admin.add_view(ReferralOverviewView)
+
 
 class InviteLinksView(BaseView):
     name = "Пригласительные ссылки"
