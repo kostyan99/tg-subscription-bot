@@ -1,0 +1,65 @@
+{% extends "sqladmin/base.html" %}
+
+{% block head %}
+{{ super() }}
+<style>
+    .sidebar {
+        width: 220px;
+        flex-shrink: 0;
+        background: #14141c;
+        border-right: 1px solid #232330;
+        padding: 24px 16px;
+        position: sticky;
+        top: 0;
+        height: 100vh;
+        overflow-y: auto;
+    }
+    .sidebar h1 { font-size: 16px; font-weight: 700; margin: 0 0 28px 8px; color: #e8e8ec; }
+    .sidebar a {
+        display: flex; align-items: center; gap: 10px;
+        padding: 10px 12px; border-radius: 10px;
+        color: #8b8b96; text-decoration: none;
+        font-size: 14px; font-weight: 500; margin-bottom: 4px;
+    }
+    .sidebar a:hover { background: #191924; color: #e8e8ec; }
+    .sidebar a.active { background: rgba(99,102,241,0.18); color: #7678f5; }
+    .layout-wrapper { display: flex; min-height: 100vh; }
+    .layout-main { flex: 1; min-width: 0; }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="layout-wrapper">
+    <nav class="sidebar">
+        <h1>Подписки</h1>
+        <a href="/">📊 Дашборд</a>
+        <a href="/admin/referral-overview">👥 Рефералы</a>
+        <a href="/admin/invite-links">🔗 Пригласительные ссылки</a>
+        <a href="{{ url_for('admin:index') }}" class="active">🗂️ Таблицы</a>
+        {% if admin.authentication_backend %}
+        <a href="{{ request.url_for('admin:logout') }}">🚪 Выйти</a>
+        {% endif %}
+    </nav>
+    <div class="layout-main">
+        <div class="container-fluid">
+            <div class="page-header d-print-none">
+                {% block content_header %}
+                <div class="row align-items-center">
+                    <div class="col">
+                        <h2 class="page-title">{{ title }}</h2>
+                        <div class="page-pretitle">{{ subtitle }}</div>
+                    </div>
+                </div>
+                {% endblock %}
+            </div>
+        </div>
+        <div class="page-body flex-grow-1">
+            <div class="container-fluid">
+                <div class="row row-deck row-cards">
+                    {% block content %} {% endblock %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
