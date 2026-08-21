@@ -1,6 +1,7 @@
 import datetime
 import os
 import secrets
+from pathlib import Path
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
@@ -64,11 +65,18 @@ app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
 async def shutdown():
     await bot_client.session.close()
 
+# admin_panel/main.py -> repo root -> templates/
+# Абсолютный путь, а не относительный — иначе SQLAdmin ищет "templates/" от
+# текущей рабочей директории процесса, а она может отличаться от репозитория
+# в зависимости от того, как именно Railway запускает Custom Start Command.
+TEMPLATES_DIR = str(Path(__file__).resolve().parent.parent / "templates")
+
 admin = Admin(
     app,
     engine,
     authentication_backend=AdminAuth(secret_key=SECRET_KEY),
     title="Подписки — админка",
+    templates_dir=TEMPLATES_DIR,
 )
 
 
