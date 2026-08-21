@@ -145,11 +145,20 @@ def render_page(active: str, title: str, body: str) -> str:
         ("/", "📊", "Дашборд", "dashboard"),
         ("/admin/referral-overview", "👥", "Рефералы", "referral-overview"),
         ("/admin/invite-links", "🔗", "Пригласительные ссылки", "invite-links"),
-        ("/admin", "🗂️", "Таблицы", "tables"),
+    ]
+    tables = [
+        ("/admin/user/list", "👤", "Пользователи"),
+        ("/admin/subscription/list", "🪪", "Подписки"),
+        ("/admin/order/list", "🧾", "Заказы"),
+        ("/admin/referral-earning/list", "🤝", "Реферальные начисления"),
+        ("/admin/withdrawal/list", "💸", "Выводы средств"),
     ]
     nav_html = "\n".join(
         f'<a href="{href}" class="{"active" if key == active else ""}">{icon} {label}</a>'
         for href, icon, label, key in nav_items
+    )
+    tables_html = "\n".join(
+        f'<a href="{href}">{icon} {label}</a>' for href, icon, label in tables
     )
     return f"""
     <!DOCTYPE html>
@@ -164,6 +173,8 @@ def render_page(active: str, title: str, body: str) -> str:
         <nav class="sidebar">
             <h1>Подписки</h1>
             {nav_html}
+            <div style="margin: 16px 0 6px 12px; font-size: 12px; color: #55555f; text-transform: uppercase; letter-spacing: 0.5px;">Таблицы</div>
+            {tables_html}
         </nav>
         <main class="content">
             {body}
