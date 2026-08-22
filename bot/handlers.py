@@ -43,6 +43,11 @@ CRYPTO_CLICK_COOLDOWN = datetime.timedelta(seconds=5)
 # не создаём новый инвойс, а переиспользуем существующий
 CRYPTO_ORDER_REUSE_WINDOW = datetime.timedelta(minutes=10)
 
+# Защита от двойного клика "Подтвердить вывод" — без неё два быстрых клика
+# могут пройти проверку "нет активной заявки" ДО того, как первый успеет
+# закоммититься, и создать два РЕАЛЬНЫХ перевода в CryptoBot одновременно
+_withdrawal_in_progress: set[int] = set()
+
 
 async def get_or_create_user(session, tg_user, referral_code: str | None = None) -> User:
     result = await session.execute(
@@ -78,6 +83,18 @@ async def get_or_create_user(session, tg_user, referral_code: str | None = None)
             return user
         except IntegrityError:
             await session.rollback()
+            # Коллизия может быть по двум разным причинам: (а) редчайшее совпадение
+            # referral_code — тогда просто пробуем новый; (б) два ПАРАЛЛЕЛЬНЫХ /start
+            # от одного юзера успели создать дубликат по telegram_id — тогда retry
+            # с новым кодом ничего не исправит, будет падать точно так же снова.
+            # Проверяем — если юзер уже существует (создан параллельным запросом),
+            # просто возвращаем его вместо бессмысленных повторных попыток.
+            result = await session.execute(
+                select(User).where(User.telegram_id == tg_user.id)
+            )
+            existing = result.scalar_one_or_none()
+            if existing is not None:
+                return existing
             if attempt == 4:
                 raise
     raise RuntimeError("unreachable")  # для линтера — цикл выше либо вернёт, либо бросит
@@ -263,15 +280,25 @@ async def withdraw_start(callback: CallbackQuery):
 
 @router.callback_query(F.data == "withdraw_execute")
 async def withdraw_execute(callback: CallbackQuery):
-    await callback.answer("Обрабатываю перевод...")
+    user_tg_id = callback.from_user.id
 
-    async with async_session() as session:
-        user = await get_or_create_user(session, callback.from_user)
-        await session.commit()
+    if user_tg_id in _withdrawal_in_progress:
+        await callback.answer("Заявка уже обрабатывается, подожди пару секунд", show_alert=False)
+        return
+    _withdrawal_in_progress.add(user_tg_id)
 
-        success, text = await process_crypto_withdrawal(session, user)
+    try:
+        await callback.answer("Обрабатываю перевод...")
 
-    await callback.message.edit_text(text, reply_markup=keyboards.back_kb("menu_referral"))
+        async with async_session() as session:
+            user = await get_or_create_user(session, callback.from_user)
+            await session.commit()
+
+            success, text = await process_crypto_withdrawal(session, user)
+
+        await callback.message.edit_text(text, reply_markup=keyboards.back_kb("menu_referral"))
+    finally:
+        _withdrawal_in_progress.discard(user_tg_id)
 
 
 # ---------- Админ-команды ----------
