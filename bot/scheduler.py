@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import logging
 
@@ -52,6 +53,10 @@ async def check_reminders(bot: Bot):
             except Exception as e:
                 log.warning(f"Не удалось отправить напоминание user_id={sub.user_id}: {e}")
 
+            # Пауза между отправками — при сотнях юзеров разом не словим
+            # flood-control от Telegram (лимит примерно 20-30 сообщений/сек)
+            await asyncio.sleep(0.05)
+
         await session.commit()
 
 
@@ -73,15 +78,30 @@ async def check_expired(bot: Bot):
                 # ban + unban = кикнуть, но оставить возможность зайти заново по новой ссылке
                 await bot.ban_chat_member(CHANNEL_ID, user.telegram_id)
                 await bot.unban_chat_member(CHANNEL_ID, user.telegram_id)
+            except Exception as e:
+                # НЕ помечаем expired при сбое кика — иначе при временной ошибке
+                # (flood-control, сбой Telegram API) юзер навсегда останется
+                # в канале: check_expired ищет только status == active, а если
+                # мы тут поставим expired, повторной попытки уже не будет.
+                # Оставляем active — просто попробуем ещё раз через час.
+                log.warning(f"Не удалось кикнуть user_id={sub.user_id}: {e} — повторим в следующем цикле")
+                await asyncio.sleep(0.05)
+                continue
+
+            sub.status = SubscriptionStatus.expired
+
+            try:
                 await bot.send_message(
                     user.telegram_id,
                     "Подписка закончилась, доступ к каналу закрыт. "
                     "Оформи новую подписку через /start, чтобы вернуться.",
                 )
             except Exception as e:
-                log.warning(f"Не удалось кикнуть user_id={sub.user_id}: {e}")
-            finally:
-                sub.status = SubscriptionStatus.expired
+                # Кик уже прошёл успешно — это главное. Уведомление необязательно,
+                # не откатываем из-за него expired-статус.
+                log.warning(f"Кикнули, но не смогли уведомить user_id={sub.user_id}: {e}")
+
+            await asyncio.sleep(0.05)
 
         await session.commit()
 
