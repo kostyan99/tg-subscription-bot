@@ -99,7 +99,7 @@ class SubscriptionAdmin(ModelView, model=Subscription):
     name_plural = "Подписки"
     icon = "fa-solid fa-id-card"
     column_list = [
-        Subscription.id, Subscription.user_id, Subscription.status,
+        Subscription.id, Subscription.user, Subscription.status,
         Subscription.start_date, Subscription.end_date, Subscription.reminded,
     ]
     column_sortable_list = [Subscription.end_date, Subscription.status]
@@ -112,7 +112,7 @@ class OrderAdmin(ModelView, model=Order):
     name_plural = "Заказы (история платежей)"
     icon = "fa-solid fa-receipt"
     column_list = [
-        Order.id, Order.user_id, Order.method, Order.amount,
+        Order.id, Order.user, Order.method, Order.amount,
         Order.status, Order.telegram_charge_id, Order.created_at,
     ]
     column_searchable_list = [Order.id, Order.telegram_charge_id]
@@ -126,7 +126,7 @@ class ReferralEarningAdmin(ModelView, model=ReferralEarning):
     name_plural = "Реферальные начисления"
     icon = "fa-solid fa-people-arrows"
     column_list = [
-        ReferralEarning.id, ReferralEarning.referrer_id, ReferralEarning.referred_user_id,
+        ReferralEarning.id, ReferralEarning.referrer, ReferralEarning.referred_user,
         ReferralEarning.method, ReferralEarning.amount, ReferralEarning.paid_out,
         ReferralEarning.created_at,
     ]
