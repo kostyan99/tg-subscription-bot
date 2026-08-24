@@ -11,7 +11,12 @@ REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 
 class CryptoBotError(Exception):
-    pass
+    """Обёртка-исключение для ошибок ответа CryptoBot. Храним оригинальный словарь
+    ответа в .data, чтобы вызывающий код мог разбирайть код ошибки по имени."""
+
+    def __init__(self, data):
+        self.data = data
+        super().__init__(str(data))
 
 
 async def create_invoice(amount: str, asset: str, payload: str, description: str) -> dict:
@@ -31,7 +36,7 @@ async def create_invoice(amount: str, asset: str, payload: str, description: str
             data = await resp.json()
             if not data.get("ok"):
                 log.error(f"CryptoBot createInvoice error: {data}")
-                raise CryptoBotError(str(data))
+                raise CryptoBotError(data)
             return data["result"]
 
 
@@ -69,20 +74,25 @@ async def transfer(user_id: int, asset: str, amount: str, spend_id: str, comment
     Из-за этого именно spend_id, а не отдельная проверка "уже выводили?" —
     настоящая защита от двойного списания при повторных кликах/ретраях.
     """
+    payload = {
+        "user_id": user_id,
+        "asset": asset,
+        "amount": amount,
+        "spend_id": spend_id,
+    }
+    # Не добавляем поле comment в запрос, если оно пустое — у новых приложений
+    # (младше 30 дней) прикреплять comment запрещено и это ломает перевод.
+    if comment:
+        payload["comment"] = comment
+
     async with aiohttp.ClientSession(timeout=REQUEST_TIMEOUT) as session:
         async with session.post(
             CRYPTO_BOT_API_URL + "transfer",
             headers={"Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN},
-            json={
-                "user_id": user_id,
-                "asset": asset,
-                "amount": amount,
-                "spend_id": spend_id,
-                "comment": comment,
-            },
+            json=payload,
         ) as resp:
             data = await resp.json()
             if not data.get("ok"):
                 log.error(f"CryptoBot transfer error: {data}")
-                raise CryptoBotError(str(data))
+                raise CryptoBotError(data)
             return data["result"]
