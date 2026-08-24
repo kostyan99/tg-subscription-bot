@@ -41,6 +41,9 @@ class User(Base):
     orders: Mapped[list["Order"]] = relationship(back_populates="user")
     subscriptions: Mapped[list["Subscription"]] = relationship(back_populates="user")
 
+    def __str__(self) -> str:
+        return f"@{self.username}" if self.username else f"id{self.telegram_id}"
+
 
 class Order(Base):
     __tablename__ = "orders"
@@ -96,6 +99,11 @@ class ReferralEarning(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=datetime.datetime.utcnow
     )
+
+    # Два разных FK на одну и ту же таблицу users — нужно явно указать
+    # foreign_keys для каждой связи, иначе SQLAlchemy не поймёт, какая есть какая
+    referrer: Mapped["User"] = relationship(foreign_keys=[referrer_id])
+    referred_user: Mapped["User"] = relationship(foreign_keys=[referred_user_id])
 
 
 class WithdrawalStatus(str, enum.Enum):
