@@ -155,22 +155,48 @@ async def process_crypto_withdrawal(session: AsyncSession, user: User) -> tuple[
     earning_ids = [e.id for e in earnings]
 
     try:
+        # Не передаём comment по умолчанию — для новых приложений CryptoBot запрещает
+        # прикреплять комментарий, из‑за чего запрос падает (CANNOT_ATTACH_COMMENT).
         transfer_result = await cryptobot.transfer(
             user_id=user.telegram_id,
             asset="USDT",
             amount=f"{total / 100:.2f}",
             spend_id=f"ref_withdrawal_{withdrawal.id}",
-            comment="Выплата за рефералов",
         )
     except cryptobot.CryptoBotError as e:
+        # Сохраняем сырый ответ в error_message для диагностики
+        raw = getattr(e, "data", str(e))
         withdrawal.status = WithdrawalStatus.failed
-        withdrawal.error_message = str(e)[:500]
+        try:
+            withdrawal.error_message = str(raw)[:500]
+        except Exception:
+            withdrawal.error_message = "(error while serializing error)"
         await session.commit()
+
+        # Попробуем распарсить имя ошибки, если CryptoBot вернул структуру {"error": {"name": ...}}
+        err_name = None
+        try:
+            if isinstance(raw, dict):
+                err_name = raw.get("error", {}).get("name")
+        except Exception:
+            err_name = None
+
+        if err_name == "INSUFFICIENT_FUNDS":
+            log.error(f"INSUFFICIENT_FUNDS during transfer spend_id=ref_withdrawal_{withdrawal.id}: {raw}")
+            # Не пытаемся автопополнять баланс — просто информируем пользователя
+            return False, (
+                "Не получилось выполнить перевод: на балансе приложения недостаточно средств. "
+                "Пожалуйста, свяжись с администратором или попробуй позже."
+            )
+
+        # Общая ошибка: скорее всего пользователь не написал /start боту CryptoBot
+        log.error(f"CryptoBot transfer failed for user_id={user.telegram_id}, spend_id=ref_withdrawal_{withdrawal.id}: {raw}")
         return False, (
             "Не получилось выполнить перевод. Самая частая причина — ты ни разу "
             "не открывал @CryptoBot. Напиши ему /start и попробуй вывести ещё раз."
         )
 
+    # Если всё успешно — отмечаем
     withdrawal.status = WithdrawalStatus.completed
     withdrawal.cryptobot_transfer_id = str(transfer_result.get("transfer_id", ""))
     await session.execute(
