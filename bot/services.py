@@ -34,8 +34,12 @@ class InviteLinkError(Exception):
     а не просто уронить хендлер."""
 
 
-async def activate_subscription(session: AsyncSession, bot: Bot, user: User) -> str:
-    """Продлевает/создаёт подписку и возвращает одноразовую invite-ссылку.
+async def activate_subscription(session: AsyncSession, bot: Bot, user: User) -> str | None:
+    """Продлевает/создаёт подписку. Возвращает одноразовую invite-ссылку —
+    но ТОЛЬКО если юзера ещё нет в канале. Если это продление и юзер уже
+    состоит в канале, возвращает None: новая ссылка ему не нужна для входа,
+    а раз она одноразовая (member_limit=1) — при выдаче "про запас" он мог бы
+    просто передать её другу для бесплатного доступа мимо оплаты.
     Вызывается ПОСЛЕ того, как оплата уже подтверждена (неважно, каким способом).
     Может бросить InviteLinkError — это ловится отдельно от прочих ошибок."""
 
@@ -66,6 +70,20 @@ async def activate_subscription(session: AsyncSession, bot: Bot, user: User) -> 
     # активна в БД, даже если следующий шаг упадёт. Юзер не теряет оплаченные дни
     # из-за технической проблемы с созданием ссылки.
     await session.commit()
+
+    try:
+        member = await bot.get_chat_member(CHANNEL_ID, user.telegram_id)
+        already_in_channel = member.status not in ("left", "kicked")
+    except Exception as e:
+        # Намеренно ловим ЛЮБОЕ исключение, не только TelegramAPIError — сюда
+        # же попадут сетевые сбои, таймауты и т.п. Не отказываем в ссылке
+        # из-за технического сбоя проверки, лучше выдать лишнюю ссылку, чем
+        # оставить реально нового юзера без доступа
+        log.warning(f"Не удалось проверить членство в канале для user_id={user.id}: {e}")
+        already_in_channel = False
+
+    if already_in_channel:
+        return None
 
     try:
         invite_link = await bot.create_chat_invite_link(
