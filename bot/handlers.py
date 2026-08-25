@@ -492,10 +492,15 @@ async def successful_payment(message: Message, bot: Bot):
             )
             return
 
-    await message.answer(
-        "Оплата прошла ✅\n\n"
-        f"Вот твоя ссылка на канал (одноразовая, действует 24 часа):\n{invite_link}"
-    )
+    if invite_link:
+        await message.answer(
+            "Оплата прошла ✅\n\n"
+            f"Вот твоя ссылка на канал (одноразовая, действует 24 часа):\n{invite_link}"
+        )
+    else:
+        await message.answer(
+            "Оплата прошла ✅ Подписка продлена — ты уже в канале, никаких доп. действий не нужно."
+        )
 
 
 # ---------- Оплата криптой ----------
