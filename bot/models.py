@@ -2,7 +2,7 @@ import datetime
 import enum
 import uuid
 
-from sqlalchemy import BigInteger, String, DateTime, Enum, ForeignKey, Boolean
+from sqlalchemy import BigInteger, String, DateTime, Enum, ForeignKey, Boolean, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship, DeclarativeBase
 
 
@@ -124,6 +124,7 @@ class Withdrawal(Base):
     )
     cryptobot_transfer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    raw_response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=datetime.datetime.utcnow
     )
