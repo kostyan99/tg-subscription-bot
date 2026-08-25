@@ -150,11 +150,18 @@ async def check_crypto_payments(bot: Bot):
                         )
                         continue
 
-                    await bot.send_message(
-                        user.telegram_id,
-                        "Оплата получена ✅\n\n"
-                        f"Вот твоя ссылка на канал (одноразовая, действует 24 часа):\n{invite_link}",
-                    )
+                    if invite_link:
+                        await bot.send_message(
+                            user.telegram_id,
+                            "Оплата получена ✅\n\n"
+                            f"Вот твоя ссылка на канал (одноразовая, действует 24 часа):\n{invite_link}",
+                        )
+                    else:
+                        await bot.send_message(
+                            user.telegram_id,
+                            "Оплата получена ✅ Подписка продлена — ты уже в канале, "
+                            "никаких доп. действий не нужно.",
+                        )
                 except Exception as e:
                     log.error(f"Ошибка обработки crypto-заказа {order.id}: {e}")
 
