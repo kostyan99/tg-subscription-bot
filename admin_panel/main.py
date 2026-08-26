@@ -16,6 +16,7 @@ from sqlalchemy.orm import aliased
 
 from bot.config import BOT_TOKEN, CHANNEL_ID
 from bot.database import engine, async_session
+from bot.payments import cryptobot as cryptobot_client
 from bot.models import (
     User, Order, Subscription, ReferralEarning, Withdrawal, ManualInviteLink,
     SubscriptionStatus, OrderStatus,
@@ -140,9 +141,9 @@ class WithdrawalAdmin(ModelView, model=Withdrawal):
     name_plural = "Выводы средств"
     icon = "fa-solid fa-money-bill-transfer"
     column_list = [
-        Withdrawal.id, Withdrawal.user_id, Withdrawal.method, Withdrawal.amount,
+        Withdrawal.id, Withdrawal.user, Withdrawal.method, Withdrawal.amount,
         Withdrawal.status, Withdrawal.cryptobot_transfer_id, Withdrawal.error_message,
-        Withdrawal.created_at,
+        Withdrawal.raw_response, Withdrawal.created_at,
     ]
     column_sortable_list = [Withdrawal.created_at]
     column_default_sort = [(Withdrawal.created_at, True)]
@@ -395,6 +396,14 @@ async def dashboard(_: str = Depends(require_auth)):
             )
         ).all()
 
+    # Баланс приложения в CryptoBot — прямо отвечает на "хватит ли денег на
+    # автовыплаты рефералам". При сбое API get_balance() просто вернёт [] —
+    # дашборд не должен падать целиком из-за недоступности внешнего сервиса.
+    balances = await cryptobot_client.get_balance()
+    usdt_balance = next(
+        (b["available"] for b in balances if b.get("currency_code") == "USDT"), None
+    )
+
     def fmt(rows):
         if not rows:
             return "—"
@@ -424,6 +433,10 @@ async def dashboard(_: str = Depends(require_auth)):
         <div class="card">
             <div class="label">Невыплаченные рефки</div>
             <div class="value">{fmt(pending_referral_payouts)}</div>
+        </div>
+        <div class="card">
+            <div class="label">Баланс приложения CryptoBot (USDT)</div>
+            <div class="value">{f"₿ {float(usdt_balance):.2f}" if usdt_balance is not None else "н/д"}</div>
         </div>
     </div>
     <p style="color:var(--text-dim)">Подробные таблицы — в разделе <a class="plain" href="/admin">Таблицы</a>, генерация ссылок на канал — в разделе <a class="plain" href="/admin/invite-links">Пригласительные ссылки</a>.</p>
