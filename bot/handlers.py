@@ -279,7 +279,7 @@ async def withdraw_start(callback: CallbackQuery):
 
 
 @router.callback_query(F.data == "withdraw_execute")
-async def withdraw_execute(callback: CallbackQuery):
+async def withdraw_execute(callback: CallbackQuery, bot: Bot):
     user_tg_id = callback.from_user.id
 
     if user_tg_id in _withdrawal_in_progress:
@@ -294,7 +294,7 @@ async def withdraw_execute(callback: CallbackQuery):
             user = await get_or_create_user(session, callback.from_user)
             await session.commit()
 
-            success, text = await process_crypto_withdrawal(session, user)
+            success, text = await process_crypto_withdrawal(session, bot, user)
 
         await callback.message.edit_text(text, reply_markup=keyboards.back_kb("menu_referral"))
     finally:
