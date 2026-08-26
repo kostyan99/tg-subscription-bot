@@ -12,7 +12,7 @@ REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 class CryptoBotError(Exception):
     """Обёртка-исключение для ошибок ответа CryptoBot. Храним оригинальный словарь
-    ответа в .data, чтобы вызывающий код мог разбирайть код ошибки по имени."""
+    ответа в .data, чтобы вызывающий код мог разбирать код ошибки по имени."""
 
     def __init__(self, data):
         self.data = data
@@ -58,6 +58,51 @@ async def get_invoices_statuses(invoice_ids: list[int]) -> dict[int, str]:
                 log.error(f"CryptoBot getInvoices error: {data}")
                 return {}
             return {item["invoice_id"]: item["status"] for item in data["result"]["items"]}
+
+
+async def get_balance() -> dict:
+    """Возвращает баланс приложения в виде словаря asset -> float (единицы валюты).
+    Пробует вызвать endpoint getBalance и парсит result. В случае ошибки возвращает {}.
+    """
+    async with aiohttp.ClientSession(timeout=REQUEST_TIMEOUT) as session:
+        try:
+            async with session.get(
+                CRYPTO_BOT_API_URL + "getBalance",
+                headers={"Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN},
+            ) as resp:
+                data = await resp.json()
+        except Exception as e:
+            log.error(f"CryptoBot getBalance request failed: {e}")
+            return {}
+
+    if not data.get("ok"):
+        log.error(f"CryptoBot getBalance error: {data}")
+        return {}
+
+    # Ожидаем, что data["result"] содержит список или словарь с балансами.
+    result = data.get("result") or {}
+    balances: dict = {}
+    # Попробуем обрабатывать несколько форматов: dict asset->amount или list of items
+    if isinstance(result, dict):
+        for k, v in result.items():
+            try:
+                balances[str(k)] = float(v)
+            except Exception:
+                pass
+    elif isinstance(result, list):
+        for item in result:
+            # подстрахуемся — могут быть разные ключи
+            asset = item.get("asset") or item.get("currency") or item.get("name")
+            amount = item.get("balance") or item.get("amount")
+            if asset and amount is not None:
+                try:
+                    balances[str(asset)] = float(amount)
+                except Exception:
+                    pass
+    else:
+        log.debug(f"Unexpected format from getBalance: {result}")
+
+    return balances
 
 
 async def transfer(user_id: int, asset: str, amount: str, spend_id: str, comment: str = "") -> dict:
