@@ -129,6 +129,8 @@ class Withdrawal(Base):
         DateTime, default=datetime.datetime.utcnow
     )
 
+    user: Mapped["User"] = relationship(foreign_keys=[user_id])
+
 
 class ManualInviteLink(Base):
     """Ссылки, сгенерированные вручную из веб-админки (не привязаны к оплате) —
