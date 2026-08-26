@@ -83,6 +83,7 @@ async def activate_subscription(session: AsyncSession, bot: Bot, user: User) -> 
         already_in_channel = False
 
     if already_in_channel:
+        log.info(f"user_id={user.id}: продление, юзер уже в канале — invite-ссылка не создаётся")
         return None
 
     try:
@@ -91,6 +92,7 @@ async def activate_subscription(session: AsyncSession, bot: Bot, user: User) -> 
             member_limit=1,
             expire_date=int((now + datetime.timedelta(days=1)).timestamp()),
         )
+        log.info(f"user_id={user.id}: создана одноразовая invite-ссылка")
         return invite_link.invite_link
     except TelegramAPIError as e:
         log.critical(f"Не удалось создать invite-ссылку для user_id={user.id}: {e}")
@@ -129,7 +131,7 @@ async def record_referral_earning(session: AsyncSession, order: Order, user: Use
     await session.commit()
 
 
-async def process_crypto_withdrawal(session: AsyncSession, user: User) -> tuple[bool, str]:
+async def process_crypto_withdrawal(session: AsyncSession, bot: Bot, user: User) -> tuple[bool, str]:
     """Выводит накопленные крипто-начисления реферера на его баланс в CryptoBot.
     Возвращает (успех, сообщение_для_юзера). Работает ТОЛЬКО с method='crypto' —
     Stars так вывести нельзя, у Bot API просто нет такого метода."""
@@ -182,9 +184,11 @@ async def process_crypto_withdrawal(session: AsyncSession, user: User) -> tuple[
             spend_id=f"ref_withdrawal_{withdrawal.id}",
         )
     except cryptobot.CryptoBotError as e:
-        # Сохраняем сырый ответ в error_message для диагностики
+        # Сохраняем сырый ответ и в error_message (для быстрого чтения), и в
+        # raw_response (структурированно — для дальнейшего разбора кода ошибки)
         raw = getattr(e, "data", str(e))
         withdrawal.status = WithdrawalStatus.failed
+        withdrawal.raw_response = raw if isinstance(raw, dict) else None
         try:
             withdrawal.error_message = str(raw)[:500]
         except Exception:
@@ -214,9 +218,29 @@ async def process_crypto_withdrawal(session: AsyncSession, user: User) -> tuple[
             "не открывал @CryptoBot. Напиши ему /start и попробуй вывести ещё раз."
         )
 
-    # Если всё успешно — отмечаем
+    # Перевод на стороне CryptoBot уже прошёл успешно в этот момент — деньги ушли.
+    # Шлём алерт админу СРАЗУ, ДО дальнейшей работы с БД (пометка completed,
+    # проставление paid_out). Если следующий шаг упадёт (обрыв соединения с БД,
+    # краш процесса) — у админа уже будет зацепка свериться вручную, а не полная
+    # тишина при том, что деньги реально были списаны с баланса приложения.
+    log.info(
+        f"CryptoBot transfer succeeded: withdrawal_id={withdrawal.id}, "
+        f"transfer_id={transfer_result.get('transfer_id')}, user_id={user.id}, amount={total}"
+    )
+    if ADMIN_TELEGRAM_ID:
+        try:
+            await bot.send_message(
+                ADMIN_TELEGRAM_ID,
+                f"💸 Перевод выполнен: {total / 100:.2f} USDT → telegram_id={user.telegram_id} "
+                f"(withdrawal_id={withdrawal.id}, transfer_id={transfer_result.get('transfer_id')}).\n"
+                "Если в БД это не отразится как completed — сверь вручную в разделе «Выводы средств».",
+            )
+        except TelegramAPIError:
+            pass  # уведомление не критично, главное что лог уже записан выше
+
     withdrawal.status = WithdrawalStatus.completed
     withdrawal.cryptobot_transfer_id = str(transfer_result.get("transfer_id", ""))
+    withdrawal.raw_response = transfer_result if isinstance(transfer_result, dict) else None
     await session.execute(
         update(ReferralEarning).where(ReferralEarning.id.in_(earning_ids)).values(paid_out=True)
     )
