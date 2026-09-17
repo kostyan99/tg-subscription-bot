@@ -23,7 +23,7 @@ def subscription_menu_kb() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text=f"₿ Оплатить {SUBSCRIPTION_PRICE_USDT} USDT (крипта)",
+                    text=f"₿ Оплатить {SUBSCRIPTION_PRICE_USDT} USDT (криптовалюта)",
                     callback_data="subscribe_crypto",
                 )
             ],
