@@ -9,6 +9,7 @@ from bot.config import BOT_TOKEN
 from bot.database import init_db
 from bot.handlers import router
 from bot.scheduler import setup_scheduler
+from bot.middlewares import ThrottlingMiddleware
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -20,6 +21,10 @@ async def main():
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher()
     dp.include_router(router)
+
+    # Защита от спама кнопками/командами — см. bot/middlewares.py
+    dp.message.outer_middleware(ThrottlingMiddleware())
+    dp.callback_query.outer_middleware(ThrottlingMiddleware())
 
     @dp.error()
     async def global_error_handler(event: ErrorEvent):
@@ -34,6 +39,13 @@ async def main():
 
     scheduler = setup_scheduler(bot)
     scheduler.start()
+
+    # Снимаем webhook перед стартом polling — если он вдруг окажется установлен
+    # (вручную, сторонним тестером, случайно), бот не должен зависать в цикле
+    # TelegramConflictError вместо того, чтобы просто продолжить работать.
+    # Безопасно вызывать всегда, даже если webhook и не был установлен —
+    # Telegram в этом случае просто отвечает "уже пусто", ошибки не будет.
+    await bot.delete_webhook(drop_pending_updates=False)
 
     # Polling — для локальной разработки и текущего прод-деплоя.
     # При переходе на webhook эту часть заменим на aiohttp.web сервер.
